@@ -1,0 +1,22 @@
+# 분석 대상 코드와 생성된 테스트는 커밋하지 않는다 (.gitkeep만 유지)
+input/*
+!input/.gitkeep
+
+# 생성된 레포트는 기본적으로 커밋하지 않는다
+reports/*
+!reports/.gitkeep
+
+# 테스트 실행 중간 산출물
+reports/.tests/
+
+# 파이썬/Node/OS 부산물
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+.gradle/
+target/
+build/
+.DS_Store
+.venv/
+venv/
