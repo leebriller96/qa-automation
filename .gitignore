@@ -6,9 +6,6 @@ input/*
 reports/*
 !reports/.gitkeep
 
-# 테스트 실행 중간 산출물
-reports/.tests/
-
 # 파이썬/Node/OS 부산물
 __pycache__/
 *.pyc
@@ -20,3 +17,9 @@ build/
 .DS_Store
 .venv/
 venv/
+dist/
+coverage/
+.mypy_cache/
+*.egg-info/
+.idea/
+.vscode/
