@@ -37,6 +37,16 @@ python -m pip install -r tools/requirements.txt
 > **Windows**: 테스트 러너 `tools/run_tests.sh`는 bash 스크립트입니다. Git for Windows(Git Bash)가 설치돼 있어야 하며,
 > Claude Code가 Bash 도구로 실행합니다. PowerShell 에서 직접 돌리려면 `bash tools/run_tests.sh input` 처럼 호출하세요.
 
+### 환경변수 (선택)
+
+| 변수 | 용도 |
+|---|---|
+| `GRADLE_ARGS` / `MAVEN_ARGS` | Java 러너 추가 인자. 예: `GRADLE_ARGS="-Pmysql"` (프로파일 조건부 테스트) |
+| `QA_PRE_RUN` / `QA_POST_RUN` | 러너 실행 전/후 1회 실행할 셸 명령 (통합 테스트용 DB·서버 기동/정리) |
+| `QA_EXCLUDE_DIRS` | 추가 제외 디렉토리(공백 구분). 환경 없이 실행 불가한 스위트를 건너뛸 때 |
+
+Gradle 은 항상 `cleanTest test --no-build-cache` 로 실행해 UP-TO-DATE/FROM-CACHE 로 "실행 안 됨" 이 "통과" 로 기록되지 않게 한다.
+
 ### 3. 실행
 
 ```text

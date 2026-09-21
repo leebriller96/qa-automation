@@ -97,6 +97,9 @@ tools/run_tests.sh <대상경로> [--timeout 초]     # Windows 는 Git Bash 에
 - `summary.md`의 수치와 실패 목록을 레포트 4절에 그대로 옮깁니다. `runs.tsv`의 status가 `runner-missing`/`deps-missing`/
   `no-test-script`/`timeout`이면 그 사실을 실행 환경 항목에 적습니다.
 - 러너가 하나도 실행되지 않으면(종료 코드 2) 사유를 기록하고 `generate-only`로 폴백합니다.
+- 프로파일 조건부 테스트(예: Gradle `-Pmysql`)는 `GRADLE_ARGS`/`MAVEN_ARGS` 로 한 번 더 실행하고 `--keep` 으로 결과를 합칩니다.
+  환경 기동이 필요한 스위트(통합 테스트)는 `QA_PRE_RUN`/`QA_POST_RUN` 으로 기동·정리 스크립트를 걸거나, 불가하면 `QA_EXCLUDE_DIRS` 로 제외하고 "환경 문제" 로 기록합니다.
+- Windows(Git Bash)에서는 `runs.tsv` 의 result_path glob 이 네이티브 경로로 변환되며 `*`/`**` 가 보존됩니다(cygpath 가 glob 을 지우는 문제는 수정됨). 집계가 0건이면 `runs.tsv` 의 result_path 를 먼저 확인합니다.
 - 가능하면 커버리지(통합 관점)도 수집합니다(예: `pytest --cov`, `jest --coverage`).
 
 ## 6. 실패 원인 분류 (triage) — 결함 확정 전 필수

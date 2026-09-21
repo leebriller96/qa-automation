@@ -7,6 +7,12 @@
 #   --timeout  러너 1회 실행 제한 시간(초). 기본 900. 초과 시 status=timeout 으로 기록.
 #   --keep     이전 실행 결과(reports/.tests/)를 지우지 않음. 기본은 실행 전 삭제.
 #
+# 환경변수:
+#   GRADLE_ARGS / MAVEN_ARGS   Java 러너에 추가 인자 (예: GRADLE_ARGS="-Pmysql" — 프로파일 조건부 테스트 실행)
+#   QA_PRE_RUN / QA_POST_RUN   러너 실행 전/후에 1회 실행할 셸 명령 (예: 통합 테스트용 DB·서버 기동/정리 스크립트).
+#                              PRE 가 0 이 아닌 코드로 끝나면 중단한다.
+#   QA_EXCLUDE_DIRS            추가로 건너뛸 디렉토리 이름(공백 구분). 예: "tests/integration" 처럼 환경 없이는 실행 불가한 스위트
+#
 # 산출물 (reports/.tests/):
 #   runs.tsv            프로젝트별 실행 기록 (id, lang, dir, status, exit_code, result_path, stdout_path, command)
 #   <id>-stdout.txt     러너 표준출력/에러
@@ -44,11 +50,30 @@ TARGET="$(cd "$TARGET" && pwd)"
 # 탐색에서 제외할 디렉토리 (의존성/빌드 산출물/가상환경). node_modules 안의 .py 등으로 오탐하지 않도록 한다.
 EXCLUDE_DIRS=(node_modules .venv venv env .git __pycache__ .pytest_cache .mypy_cache .tox
               target build dist out .gradle .idea .vscode site-packages coverage .next bin obj)
+# QA_EXCLUDE_DIRS 로 추가 제외 (공백 구분)
+# shellcheck disable=SC2206
+[ -n "${QA_EXCLUDE_DIRS:-}" ] && EXCLUDE_DIRS+=(${QA_EXCLUDE_DIRS})
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # Git Bash(MSYS)의 /c/... 경로를 Windows 네이티브(C:/...)로 바꾼다. 결과 파일을 파이썬/러너가 읽을 수 있어야 하기 때문.
-native() { if have cygpath; then cygpath -m "$1"; else printf '%s\n' "$1"; fi; }
+# cygpath 는 '*'·'?' 를 제거한다(예: a/**/x.xml → a//x.xml). glob 이 있으면 첫 glob 문자 앞 디렉토리만 변환하고 나머지는 그대로 붙인다.
+native() {
+  local p="$1"
+  if have cygpath; then
+    case "$p" in
+      *[\*\?]*)
+        local pre="${p%%[\*\?]*}"           # 첫 glob 문자 앞까지 (예: /c/x/target/TEST-)
+        local dir="${pre%/*}"                 # 그중 마지막 '/' 앞 = 실제 디렉토리 (예: /c/x/target)
+        local rest="${p#"$dir"/}"             # 디렉토리 뒤 전부, glob 포함 (예: TEST-*.xml)
+        printf '%s/%s\n' "$(cygpath -m "$dir")" "$rest"
+        ;;
+      *) cygpath -m "$p" ;;
+    esac
+  else
+    printf '%s\n' "$p"
+  fi
+}
 # ';' 로 구분된 glob 목록 각각을 네이티브 경로로 변환
 native_globs() {
   local IFS=';' out=() g
@@ -127,6 +152,12 @@ mkdir -p "$OUT_DIR"
 
 echo "[run_tests] 대상: $TARGET"
 echo "[run_tests] 결과: $OUT_DIR (타임아웃 ${TIMEOUT_SEC}s)"
+if [ -n "${QA_PRE_RUN:-}" ]; then
+  echo "[run_tests] pre-run: $QA_PRE_RUN"
+  if ! bash -c "$QA_PRE_RUN"; then echo "[run_tests] pre-run 실패 — 중단"; exit 2; fi
+fi
+# shellcheck disable=SC2064
+[ -n "${QA_POST_RUN:-}" ] && trap "echo '[run_tests] post-run: $QA_POST_RUN'; bash -c \"$QA_POST_RUN\"" EXIT
 ran_any=0
 
 # ---------- 1) Python (pytest) ----------
@@ -235,9 +266,10 @@ while IFS= read -r dir; do
     record "$id" java "$dir" runner-missing "" "" "" "mvn test"
     continue
   fi
-  run_cmd "$id" "$dir" $MVN -B -q test
+  # shellcheck disable=SC2086
+  run_cmd "$id" "$dir" $MVN -B -q test ${MAVEN_ARGS:-}
   # surefire(단위)/failsafe(통합) 리포트 모두 집계 대상
-  record "$id" java "$dir" "$LAST_STATUS" "$LAST_EXIT" "$dir/target/surefire-reports/TEST-*.xml;$dir/target/failsafe-reports/TEST-*.xml" "$OUT_DIR/$id-stdout.txt" "$MVN -B -q test"
+  record "$id" java "$dir" "$LAST_STATUS" "$LAST_EXIT" "$dir/target/surefire-reports/TEST-*.xml;$dir/target/failsafe-reports/TEST-*.xml" "$OUT_DIR/$id-stdout.txt" "$MVN -B -q test ${MAVEN_ARGS:-}"
   ran_any=1
 done < <(find_marker_dirs pom.xml | dedupe_nested)
 
@@ -254,8 +286,10 @@ while IFS= read -r dir; do
     continue
   fi
   [ "$GRADLE" = "./gradlew" ] && chmod +x "$dir/gradlew" 2>/dev/null
-  run_cmd "$id" "$dir" $GRADLE test --continue --console=plain -q
-  record "$id" java "$dir" "$LAST_STATUS" "$LAST_EXIT" "$dir/**/build/test-results/**/*.xml" "$OUT_DIR/$id-stdout.txt" "$GRADLE test --continue"
+  # cleanTest: 이전 결과가 UP-TO-DATE/FROM-CACHE 로 재사용되면 "실행" 이 아니다. GRADLE_ARGS 로 프로파일 인자(-Pmysql 등) 전달.
+  # shellcheck disable=SC2086
+  run_cmd "$id" "$dir" $GRADLE cleanTest test --continue --console=plain -q --no-build-cache ${GRADLE_ARGS:-}
+  record "$id" java "$dir" "$LAST_STATUS" "$LAST_EXIT" "$dir/**/build/test-results/**/*.xml" "$OUT_DIR/$id-stdout.txt" "$GRADLE cleanTest test --continue --no-build-cache ${GRADLE_ARGS:-}"
   ran_any=1
 done < <(find_marker_dirs build.gradle build.gradle.kts | dedupe_nested)
 
