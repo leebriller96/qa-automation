@@ -91,6 +91,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <div class="pdf-hint">PDF로 저장하려면: 이 화면에서 <b>Ctrl + P</b> (Mac은 Cmd + P) → 프린터를 "PDF로 저장" 또는 "Microsoft Print to PDF"로 선택하세요.</div>
 {content}
 <div class="footer">생성: {generated} (KST) · qa-automation</div>
+<script>
+  // mermaid 다이어그램(ERD·구성도)이 있으면 CDN 에서 로드해 렌더링한다. 오프라인이면 소스 텍스트가 그대로 보인다.
+  if (document.querySelector('pre.mermaid')) {{
+    var s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
+    s.onload = function () {{ mermaid.initialize({{ startOnLoad: false, theme: 'neutral' }}); mermaid.run({{ querySelector: 'pre.mermaid' }}); }};
+    document.body.appendChild(s);
+  }}
+</script>
 </body>
 </html>
 """
@@ -140,6 +149,11 @@ def md_to_html(md_text: str, title: str) -> str:
         extension_configs={"toc": {"toc_depth": "2-3", "title": "목차"}},
     )
     body = md.convert(md_text)
+    # ```mermaid 블록은 fenced_code 가 <pre><code class="language-mermaid"> 로 만든다 → mermaid.js 가 읽는 <pre class="mermaid"> 로 치환
+    body = re.sub(
+        r'<pre><code class="language-mermaid">(.*?)</code></pre>',
+        lambda m: '<pre class="mermaid">' + m.group(1).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&") + '</pre>',
+        body, flags=re.S)
     body = highlight(body)
 
     # 목차를 첫 h1 바로 뒤에 삽입 (h1 이 없으면 본문 맨 앞)
