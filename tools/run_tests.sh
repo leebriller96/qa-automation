@@ -193,11 +193,35 @@ while IFS= read -r dir; do
   [ -n "$dir" ] && [ -d "$dir" ] || continue
   id="$(mkid js "$dir")"
   echo "[run_tests] [JS/TS] $(rel "$dir")"
-  if ! have npm; then
+  # packageManager 필드(pnpm@x / yarn@x)가 있으면 corepack 으로 그 패키지 매니저를 쓴다.
+  # (pnpm 워크스페이스는 npm 으로 실행하면 루트 스크립트 `pnpm -r test` 가 재귀 호출돼 실패한다)
+  PM=npm; PM_RUN="npm test --silent"
+  pm_field="$(cd "$dir" && node -p "(require('./package.json').packageManager)||''" 2>/dev/null || true)"
+  case "$pm_field" in
+    pnpm@*) PM=pnpm ;;
+    yarn@*) PM=yarn ;;
+  esac
+  if [ "$PM" != npm ]; then
+    if have "$PM"; then PM_RUN="$PM test";
+    elif have corepack; then PM_RUN="corepack $PM test";
+    else
+      echo "[run_tests]   $PM 미설치(corepack 도 없음)"
+      record "$id" js "$dir" runner-missing "" "" "" "$PM test"
+      continue
+    fi
+  fi
+  if ! have npm && [ "$PM" = npm ]; then
     echo "[run_tests]   npm 미설치 (Node.js 설치 필요)"
     record "$id" js "$dir" runner-missing "" "" "" "npm test"
     continue
   fi
+  # pm 자체를 호출하는 형태(스크립트가 아니라 exec 용)
+  case "$PM_RUN" in
+    "corepack "*) PM_RUN_EXEC="corepack $PM" ;;
+    *)            PM_RUN_EXEC="$PM" ;;
+  esac
+  # watch 모드 방지 (vitest/jest 는 CI 에서 1회 실행)
+  export CI="${CI:-1}"
   if [ ! -d "$dir/node_modules" ]; then
     echo "[run_tests]   node_modules 없음 → 의존성 미설치 (cd $(rel "$dir") && npm ci)"
     record "$id" js "$dir" deps-missing "" "" "" "npm test"
@@ -217,18 +241,37 @@ while IFS= read -r dir; do
       has_script=0 ;;
     *) has_script=1 ;;
   esac
+  # pnpm 워크스페이스: 루트 test 스크립트(`pnpm -r test`)는 기계판독 결과를 남기지 않는다
+  # → 패키지마다 vitest 를 직접 실행해 각 패키지 디렉토리에 junit 을 남긴다.
+  if [ "$PM" = pnpm ] && [ -f "$dir/pnpm-workspace.yaml" ] && [ "$runner" = other ]; then
+    if ls "$dir"/*/node_modules/.bin/vitest >/dev/null 2>&1; then
+      echo "[run_tests]   pnpm 워크스페이스 + vitest → 패키지별 실행"
+      run_cmd "$id" "$dir" $PM_RUN_EXEC -r exec vitest run --reporter=junit --outputFile=.qa-junit.xml
+      record "$id" js "$dir" "$LAST_STATUS" "$LAST_EXIT" "$dir/*/.qa-junit.xml" "$OUT_DIR/$id-stdout.txt" "$PM -r exec vitest run (워크스페이스)"
+      ran_any=1
+      continue
+    fi
+  fi
   case "$runner" in
     jest)
       out="$(native "$OUT_DIR/$id-jest.json")"
       if [ $has_script -eq 1 ]; then
-        run_cmd "$id" "$dir" npm test --silent -- --ci --json --outputFile="$out"
+        run_cmd "$id" "$dir" $PM_RUN -- --ci --json --outputFile="$out"
       else
         run_cmd "$id" "$dir" npx --no-install jest --ci --json --outputFile="$out"
       fi ;;
     vitest)
       out="$(native "$OUT_DIR/$id-junit.xml")"
+      # 워크스페이스 루트에서 `-r test` 로 여러 패키지를 돌리면 outputFile 이 패키지마다 덮어써진다
+      # → 패키지별 파일로 분리되도록 VITEST_JUNIT_DIR 를 쓰는 대신, 루트 실행 결과만 집계하고
+      #   패키지 개별 실행이 필요하면 QA_PRE_RUN 으로 지정한다(외부 스킬 §환경변수).
       if [ $has_script -eq 1 ]; then
-        run_cmd "$id" "$dir" npm test --silent -- --run --reporter=junit --outputFile="$out"
+        # pnpm 은 `--` 를 스크립트 인자로 넘기므로 붙이지 않는다(필터·플래그가 무효화됨)
+        if [ "$PM" = pnpm ]; then
+          run_cmd "$id" "$dir" $PM_RUN --run --reporter=junit --outputFile="$out"
+        else
+          run_cmd "$id" "$dir" $PM_RUN -- --run --reporter=junit --outputFile="$out"
+        fi
       else
         run_cmd "$id" "$dir" npx --no-install vitest run --reporter=junit --outputFile="$out"
       fi ;;
@@ -236,7 +279,11 @@ while IFS= read -r dir; do
       out="$(native "$OUT_DIR/$id-junit.xml")"
       export PLAYWRIGHT_JUNIT_OUTPUT_NAME="$out"
       if [ $has_script -eq 1 ]; then
-        run_cmd "$id" "$dir" npm test --silent -- --reporter=junit
+        if [ "$PM" = pnpm ]; then
+          run_cmd "$id" "$dir" $PM_RUN --reporter=junit
+        else
+          run_cmd "$id" "$dir" $PM_RUN -- --reporter=junit
+        fi
       else
         run_cmd "$id" "$dir" npx --no-install playwright test --reporter=junit
       fi
@@ -248,9 +295,9 @@ while IFS= read -r dir; do
         continue
       fi
       out=""   # 기계판독 결과 없음 → stdout 만 남김
-      run_cmd "$id" "$dir" npm test --silent ;;
+      run_cmd "$id" "$dir" $PM_RUN ;;
   esac
-  record "$id" js "$dir" "$LAST_STATUS" "$LAST_EXIT" "$out" "$OUT_DIR/$id-stdout.txt" "npm test ($runner)"
+  record "$id" js "$dir" "$LAST_STATUS" "$LAST_EXIT" "$out" "$OUT_DIR/$id-stdout.txt" "$PM test ($runner)"
   ran_any=1
 done < <(find_marker_dirs package.json | dedupe_nested)
 
@@ -269,7 +316,8 @@ while IFS= read -r dir; do
   # shellcheck disable=SC2086
   run_cmd "$id" "$dir" $MVN -B -q test ${MAVEN_ARGS:-}
   # surefire(단위)/failsafe(통합) 리포트 모두 집계 대상
-  record "$id" java "$dir" "$LAST_STATUS" "$LAST_EXIT" "$dir/target/surefire-reports/TEST-*.xml;$dir/target/failsafe-reports/TEST-*.xml" "$OUT_DIR/$id-stdout.txt" "$MVN -B -q test ${MAVEN_ARGS:-}"
+  # 멀티모듈(부모 pom + 하위 모듈)은 결과가 각 모듈의 target 아래 생긴다 → 루트와 하위를 모두 집계
+  record "$id" java "$dir" "$LAST_STATUS" "$LAST_EXIT" "$dir/target/surefire-reports/TEST-*.xml;$dir/target/failsafe-reports/TEST-*.xml;$dir/*/target/surefire-reports/TEST-*.xml;$dir/*/target/failsafe-reports/TEST-*.xml;$dir/*/*/target/surefire-reports/TEST-*.xml;$dir/*/*/target/failsafe-reports/TEST-*.xml" "$OUT_DIR/$id-stdout.txt" "$MVN -B -q test ${MAVEN_ARGS:-}"
   ran_any=1
 done < <(find_marker_dirs pom.xml | dedupe_nested)
 
